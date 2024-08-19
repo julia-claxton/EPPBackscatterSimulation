@@ -64,7 +64,8 @@ The units of all distributions are in number of electrons.
 To re-bin the backscatter data to a new grid, run the function `bin_backscatter_data(energy_nbins, pa_nbins)` with your desired number of bins for each dimension. Any simulation run after this will be on the new grid.
 
 ## Technical Notes
-• Beams are inputted to the simulation at an alitude of 300km. The output distributions are recorded at 450 km. Conversions to and from pitch angle distributions at other locations can be performed with the following relation: \
+• Beams are inputted to the simulation at an alitude of 300km. The output distributions are recorded at 450 km. Conversions to and from pitch angle distributions at other locations can be performed with the following relation:
+
 <img src="./readme_files/pa_conversion.png" width="150"/>
 
 • You may see 'banding' in the backscatter for some input PADs. This banding is non-physical. It is due to the fact that the backscatter simulation is performed using a weighted sum of the backscatter of several discrete monoenergetic beams, causing a banding effect when the backscatter from each individual beam is noticeable. 
