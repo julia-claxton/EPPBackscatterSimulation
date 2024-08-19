@@ -1,5 +1,5 @@
 # Housekeeping
-PACKAGE_TOP_LEVEL = dirname(@__DIR__)
+PACKAGE_TOP_LEVEL = @__DIR__
 @assert endswith(PACKAGE_TOP_LEVEL, "EPPBackscatterSimulation")
 
 # Library includes

@@ -20,7 +20,7 @@ This library supports input energies from 10 keV to 10 MeV, and input pitch angl
 So to create a distribution to simulate, let's first access the energy and pitch angle bins. **Energies are in keV and pitch angles in degrees.**
 
 ```
-include("./BackscatterSimulation.jl")
+include("./EPPBackscatterSimulation/BackscatterSimulation.jl")
 
 energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
 ```
