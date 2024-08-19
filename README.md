@@ -50,7 +50,7 @@ Now we can simulate the backscatter.
 ```
 output_distributions = backscatter_simulation(input_distribution, n_bounces = 1)
 ```
-This returns an `n_bounces`x`energy_nbins`x`pa_nbins` array. The first array (`distributions[1,:,:]`) is our input distribution. The second array (`distributions[2,:,:]`) is the backscatter after the first bounce. You can simulate multiple bounces between hemispheres with the `n_bounces` keyword.
+This returns an `n_bounces`x`energy_nbins`x`pa_nbins` array. The first array (`output_distributions[1,:,:]`) is our input distribution. The second array (`output_distributions[2,:,:]`) is the backscatter after the first bounce. You can simulate multiple bounces between hemispheres with the `n_bounces` keyword.
 
 We can now look at the backscatter distribution:
 ```
