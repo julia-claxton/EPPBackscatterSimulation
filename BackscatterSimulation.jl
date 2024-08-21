@@ -12,7 +12,7 @@ using DelimitedFiles
 using Glob
 
 # ---------------- Backscatter Simulation Functions ----------------
-function backscatter_simulation(input_distribution, n_bounces, show_progress = true)
+function multibounce_simulation(input_distribution, n_bounces, show_progress = true)
     energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
 
     distributions = zeros(n_bounces + 1, energy_nbins, pa_nbins)
