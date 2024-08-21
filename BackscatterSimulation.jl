@@ -1,6 +1,6 @@
 # Housekeeping
-PACKAGE_TOP_LEVEL = @__DIR__
-@assert endswith(PACKAGE_TOP_LEVEL, "EPPBackscatterSimulation")
+const BackscatterSimulation_TOP_LEVEL = @__DIR__
+@assert endswith(BackscatterSimulation_TOP_LEVEL, "EPPBackscatterSimulation")
 
 # Library includes
 using Statistics
@@ -84,7 +84,7 @@ function _get_prebaked_backscatter(input_energy, input_pa)
     end
 
     # Find precalculated beam energies and pitch angles
-    backscatter_directory = "$(PACKAGE_TOP_LEVEL)/data/binned_backscatter_distributions"
+    backscatter_directory = "$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions"
     backscatter_filepaths = glob("*deg.npz", backscatter_directory)
     backscatter_filenames = replace.(backscatter_filepaths, "$(backscatter_directory)/" => "")
 
@@ -118,7 +118,7 @@ function _get_prebaked_backscatter(input_energy, input_pa)
 end
 
 function get_data_bins()
-    data_bins = npzread("$(PACKAGE_TOP_LEVEL)/data/binned_backscatter_distributions/data_bins.npz")
+    data_bins = npzread("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions/data_bins.npz")
 
     energy_nbins = data_bins["energy_nbins"]
     energy_bin_edges = data_bins["energy_bin_edges"]
@@ -140,7 +140,7 @@ function bin_backscatter_data(energy_nbins, pa_nbins)
     pa_bin_edges = LinRange(0, 180, pa_nbins + 1)
 
     # Save bins
-    npzwrite("$(PACKAGE_TOP_LEVEL)/data/binned_backscatter_distributions/data_bins.npz",
+    npzwrite("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions/data_bins.npz",
         energy_nbins = energy_nbins,
         energy_bin_edges = energy_bin_edges,
         energy_bin_means = _bin_edges_to_means(energy_bin_edges),
@@ -151,13 +151,13 @@ function bin_backscatter_data(energy_nbins, pa_nbins)
     )
 
     # Find backscatter data
-    backscatter_data_directory = "$(PACKAGE_TOP_LEVEL)/data/raw_backscatter"
+    backscatter_data_directory = "$(BackscatterSimulation_TOP_LEVEL)/data/raw_backscatter"
     backscatter_filepaths = glob("*.csv", backscatter_data_directory)
     backscatter_filenames = replace.(backscatter_filepaths, "$(backscatter_data_directory)/" => "")
 
     # Make sure we have a destination path for the binned distributions
-    if isdir("$(PACKAGE_TOP_LEVEL)/data/binned_backscatter_distributions") == false
-        mkdir("$(PACKAGE_TOP_LEVEL)/data/binned_backscatter_distributions")
+    if isdir("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions") == false
+        mkdir("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions")
     end
 
     # Start binning data
@@ -182,7 +182,7 @@ function _prebake_backscatter_file(filename, backscatter_data_directory)
 
     backscatter_distribution = _get_single_beam_backscatter(filename, backscatter_data_directory)
 
-    npzwrite("$(PACKAGE_TOP_LEVEL)/data/binned_backscatter_distributions/$(energy)keV_$(pitch_angle)deg.npz",
+    npzwrite("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions/$(energy)keV_$(pitch_angle)deg.npz",
         energy_bin_edges = energy_bin_edges,
         pitch_angle_bin_edges = pa_bin_edges,
         backscatter_distribution = backscatter_distribution
