@@ -46,7 +46,7 @@ plot_distribution(input_distribution)
 ```
 ![image](./readme_files/input_distribution.png)
 
-Now we can simulate the backscatter.
+Now we can simulate the backscatter with `simulate_backscatter()`.
 ```
 output_distribution = simulate_backscatter(input_distribution)
 ```
