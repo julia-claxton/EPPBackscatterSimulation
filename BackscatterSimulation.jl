@@ -25,7 +25,7 @@ function backscatter_simulation(input_distribution; n_bounces = 1, show_progress
             reverse!(input_distribution, dims = 2) # Move the distribution from the antiloss cone to the loss cone
         end
 
-        distributions[i,:,:] = _simulate_backscatter(input_distribution, show_progress)
+        distributions[i,:,:] = simulate_backscatter(input_distribution, show_progress = show_progress)
     end
     # Now we need to reverse the even bounces to get them in the correct cone from the persepctive of a stationary observer
     # Since we start at the 0th bounce, the 2nd, 4th, etc, bounces will be indexes 3, 5, 7, etc.
@@ -37,7 +37,7 @@ function backscatter_simulation(input_distribution; n_bounces = 1, show_progress
     return distributions
 end
 
-function _simulate_backscatter(input_distribution, show_progress)
+function simulate_backscatter(input_distribution; show_progress = true)
     energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
 
     # Create backscatter distribution

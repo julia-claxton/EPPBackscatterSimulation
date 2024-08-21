@@ -48,13 +48,11 @@ plot_distribution(input_distribution)
 
 Now we can simulate the backscatter.
 ```
-output_distributions = backscatter_simulation(input_distribution, n_bounces = 1)
+output_distribution = simulate_backscatter(input_distribution)
 ```
-This returns an `n_bounces`x`energy_nbins`x`pa_nbins` array. The first array (`output_distributions[1,:,:]`) is our input distribution. The second array (`output_distributions[2,:,:]`) is the backscatter after the first bounce. You can simulate multiple bounces between hemispheres with the `n_bounces` keyword.
-
-We can now look at the backscatter distribution:
+This returns an array of the same size as our input containing the backscattered distribution. We can preview the backscatter distribution as before:
 ```
-plot_distribution(output_distributions[2,:,:])
+plot_distribution(output_distribution)
 ```
 ![image](./readme_files/output_distribution.png)
 
