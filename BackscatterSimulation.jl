@@ -12,7 +12,7 @@ using DelimitedFiles
 using Glob
 
 # ---------------- Backscatter Simulation Functions ----------------
-function multibounce_simulation(input_distribution, n_bounces, show_progress = true)
+function multibounce_simulation(input_distribution, n_bounces; show_progress = true)
     energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
 
     distributions = zeros(n_bounces + 1, energy_nbins, pa_nbins)
@@ -64,6 +64,12 @@ function simulate_backscatter(input_distribution; show_progress = true)
     end
     if show_progress == true; println(); end
     return output_distribution
+end
+
+function atmosphere_loss_rate(distributions)
+    n_particles = sum.(eachslice(distributions, dims = 1))
+    loss_fraction = 1 .- [n_particles[i+1] / n_particles[i] for i = 1:length(n_particles)-1]
+    return mean(loss_fraction[isfinite.(loss_fraction)])
 end
 
 function _get_prebaked_backscatter(input_energy, input_pa)
