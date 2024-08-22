@@ -351,50 +351,56 @@ function individual_bounce_plots(distributions; noisegate = -Inf)
     display("image/png",plot!())
 end
 
-function compare_input_to_output(distributions; remove_input = false, show_plot = true)
-    input_distribution = distributions[1,:,:]
+function compare_input_to_output(distributions; show_plot = true)
+    simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_data_bins()
 
-    # Calculate output distribution
-    range_to_sum = 1:size(distributions)[1]
-    if remove_input == true
-        range_to_sum = 2:size(distributions)[1]
-    end
-    output_distribution = dropdims(sum(distributions[range_to_sum, :, :], dims = 1), dims = 1)
+    n_bounces = size(distributions)[1] - 1
+    
+    input = distributions[1,:,:]
+    input_energy_spectrum = dropdims(sum(input, dims = 2), dims = 2)
+    input_pa_spectrum = dropdims(sum(input, dims = 1), dims = 1)
 
-    e_ymax_in = max(sum(input_distribution, dims = 2)...) * 1.1
-    e_ymax_out = max(sum(output_distribution, dims = 2)...) * 1.1
-    e_ymax = e_ymax_in #max(e_ymax_in, e_ymax_out)
+    output = dropdims(sum(distributions, dims = 1), dims = 1)
+    output_energy_spectrum = dropdims(sum(output, dims = 2), dims = 2)
+    output_pa_spectrum = dropdims(sum(output, dims = 1), dims = 1)
 
-    pa_ymax_in = max(sum(input_distribution, dims = 1)...) * 1.1
-    pa_ymax_out = max(sum(output_distribution, dims = 1)...) * 1.1
-    pa_ymax = pa_ymax_in #max(pa_ymax_in, pa_ymax_out)
-
-    clims = (log10.(max(input_distribution...)) - 4, log10.(max(input_distribution...)))
-
-    in = _heatmap_and_spectra(input_distribution, e_ymax, pa_ymax, clims, "Simulation Input")
-    out = _heatmap_and_spectra(output_distribution, e_ymax, pa_ymax, clims, "$(size(distributions)[1]-1) Bounces")
-
-    plot(in, out,
-        layout = (2,1),
-        size = (2, 1.2) .* 500,
-        background = :transparent,
-        dpi = 250
-    )
-    if show_plot == true; display("image/png",plot!()); end
-    return plot!()
-end
-
-function _heatmap_and_spectra(distribution, e_ymax, pa_ymax, clims, title)
-    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
-
+    # Input heatmap
     xlims = (0, 180)
     Δx = xlims[2] - xlims[1]
 
     ylims = log10.([10, 1e4])
     Δy = ylims[2] - ylims[1]
 
-    heatmap(pa_bin_edges, log10.(energy_bin_edges), log10.(distribution),
-        title = title,
+    cmax = log10(max(input[input .≠ 0]..., output[output .≠ 0]...))
+    clims = (cmax-4, cmax)
+    heatmap(simulation_pa_bin_edges, log10.(simulation_energy_bin_edges), log10.(input),
+        title = "Input",
+
+        xlabel = "Pitch Angle, deg",
+        xlims = xlims,
+
+        ylabel = "Energy, keV",
+        ylims = ylims,
+        yticks = ([1, 2, 3, 4], ["10¹", "10²", "10³", "10⁴"]),
+
+        colorbar_title = "Log10 # Electrons",
+        clims = clims,
+        colormap = :haline,
+
+        leftmargin = 10mm,
+
+        aspect_ratio = Δx/Δy,
+        background_color_inside = :black,
+        bordercolor = :transparent, # No axis border
+        foreground_color_axis = :transparent, # No ticks
+        framestyle = :box,
+        grid = false
+    )
+    input_heatmap = plot!()
+
+    # Output heatmap
+    heatmap(simulation_pa_bin_edges, log10.(simulation_energy_bin_edges), log10.(output),
+        title = "$(n_bounces) Bounce Output",
 
         xlabel = "Pitch Angle, deg",
         xlims = xlims,
@@ -408,80 +414,102 @@ function _heatmap_and_spectra(distribution, e_ymax, pa_ymax, clims, title)
         colormap = :haline,
 
         aspect_ratio = Δx/Δy,
-
-
-        topmargin = -5mm,
-        bottommargin = -5mm,
-        rightmargin = 5mm,
-        leftmargin = 5mm,
-
         background_color_inside = :black,
         bordercolor = :transparent, # No axis border
         foreground_color_axis = :transparent, # No ticks
         framestyle = :box,
         grid = false
     )
-    image = plot!()
-    energy_spectrum = dropdims(sum(distribution, dims = 2), dims = 2)
-    plot(energy_bin_means, energy_spectrum,
+    output_heatmap = plot!()
+
+    # Energy spectrum
+    ymax = max(input_energy_spectrum...) * 1.2 #max(cat(input_energy_spectrum, output_energy_spectrum, dims = 1)...)*1.1
+    plot(simulation_energy_bin_means, input_energy_spectrum,
         title = "Energy Spectrum",
 
         linetype = :steppost,
-        linecolor = RGB(0x00afda),
+        linecolor = :gray,
+        linestyle = :dot,
         linewidth = 1.4,
-        label = false,
+        label = "Input",
 
         xlabel = "Energy",
         xlims = (10, 10e3),
         xscale = :log10,
 
         ylabel = "# Electrons",
-        ylims = (0, e_ymax), 
-        
-        aspect_ratio = (10e3-10)/e_ymax,
+        ylims = (0, ymax),
 
-        topmargin = -5mm,
-        bottommargin = -5mm,
-        rightmargin = 5mm
-    )
-    energy = plot!()
-    pa_spectrum = dropdims(sum(distribution, dims = 1), dims = 1)
-    #ΔΩ = [2π * (cosd.(pa_bin_edges[i]) - cosd(pa_bin_edges[i+1])) for i = 1:pa_nbins]
-    #pa_spectrum ./= ΔΩ # Normalize to particles per steradian
-    # ^ not sure about that. it blows up the 0 and 180 regions
-    
-    plot(pa_bin_means, pa_spectrum,
-        title = "Pitch Angle Spectrum",
+        topmargin = 5mm,
         
+        aspect_ratio = (10e3-10)/ymax,
+        framestyle = :box,
+        tickdirection = :out,
+        legend = :bottomright,
+    )
+    plot!(simulation_energy_bin_means, output_energy_spectrum,
         linetype = :steppost,
-        linecolor = RGB(0x00afda),
+        linecolor = :black,
+        linestyle = :solid,
         linewidth = 1.4,
-        label = false,
+        label = "Output",
+
+    )
+    e_plot = plot!()
+
+    # PA spectrum
+    ymax = max(input_pa_spectrum...) * 1.2 #max(cat(input_pa_spectrum, output_pa_spectrum, dims = 1)...)*1.1
+    plot(simulation_pa_bin_means, input_pa_spectrum,
+        title = "Pitch Angle Spectrum",
+                
+        linetype = :steppost,
+        linecolor = :gray,
+        linestyle = :dot,
+        linewidth = 1.4,
+        label = "Input",
 
         xlabel = "Pitch Angle",
         xlims = (0, 180),
 
         ylabel = "# Electrons",
-        ylims = (0, pa_ymax), 
+        ylims = (0, ymax),
 
-        aspect_ratio = 180/pa_ymax,
+        topmargin = 5mm,
 
-        topmargin = -5mm,
-        bottommargin = -5mm,
-        rightmargin = 5mm
+        aspect_ratio = 180/ymax,
+        framestyle = :box,
+        tickdirection = :out,
+        legend = false,
     )
-    pa = plot!()
+    plot!(simulation_pa_bin_means, output_pa_spectrum,
+        linetype = :steppost,
+        linecolor = :black,
+        linestyle = :solid,
+        linewidth = 1.4,
+        label = "Output",
+    )
+    pa_plot = plot!()
 
-    layout = @layout [a{.4w} b c]
-    plot(image, energy, pa,
+    # Multibounce statistics
+    multibounce = _multibounce_statistics_plot(distributions)
+
+    # Main plot
+    layout = @layout [a b
+                      c d
+                      e]
+    plot(input_heatmap, output_heatmap, e_plot, pa_plot, multibounce,
         layout = layout,
-        size = (3.2, 1) .* 300,
         background = :transparent,
+        size = (1, 1.25) .* 700,
+        dpi = 300
     )
+    if show_plot == true; display("image/png",plot!()); end
     return plot!()
 end
 
-function plot_multibounce_statistics(distributions; show_plot = true)
+function _multibounce_statistics_plot(distributions)
+    simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_data_bins()
+
     n_distros = size(distributions)[1]
 
     n_particles = sum.(eachslice(distributions, dims = 1))
@@ -492,7 +520,7 @@ function plot_multibounce_statistics(distributions; show_plot = true)
 
     for i = 1:n_distros
         for e = 1:size(distributions)[2]
-            energy_distros[i,e,:] = distributions[i,e,:] .* energy_bin_means[e]
+            energy_distros[i,e,:] = distributions[i,e,:] .* simulation_energy_bin_means[e]
         end
         energy_in_each_distro[i] = sum(energy_distros[i,:,:])
     end
@@ -510,15 +538,19 @@ function plot_multibounce_statistics(distributions; show_plot = true)
         label = false,
 
         xlabel = "Number of Bounces",
+        xlims = (0, n_distros-.9),
 
         ylabel = "Energy Deposited (keV)",
-        
-        margin = 5mm
+        ylims = (0, energy_deposited_cdf[end]*1.1),
+
+        tickdirection = :out,
+        framestyle = :box,
+        aspect_ratio = (n_distros-.8)/(energy_deposited_cdf[end]*1.1)
     )
     energy = plot!()
 
     plot(0:n_distros-1, percent_remaining,
-        title = "% Input Population Remaining",
+        title = "% Input Remaining",
 
         marker = true,
         markercolor = :black,
@@ -528,24 +560,24 @@ function plot_multibounce_statistics(distributions; show_plot = true)
         label = false,
 
         xlabel = "Number of Bounces",
+        xlims = (-.1, n_distros-.9),
 
         ylabel = "% particles remaining",
-        ylims = (.01, 120),
+        ylims = (.01, 130),
         yscale = :log10,
 
-        margin = 5mm
+        tickdirection = :out,
+        framestyle = :box,
+        aspect_ratio = (n_distros-.8)/(130-.1)
     )
     particles = plot!()
 
     plot(energy, particles,
         layout = (1,2),
-        background = :transparent,
-        size = (2,1) .* 400,
-        dpi = 300
+        background = :transparent
     )
-    display("image/png",plot!())
+    return plot!()
 end
-
 # ---------------- General Use Helpful Functions ----------------
 function _print_progress_bar(fraction; bar_length = 20, overwrite = true)
 # Prints a progress bar to terminal filled to user-specified percentage.
