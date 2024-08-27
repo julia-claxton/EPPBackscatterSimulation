@@ -445,7 +445,7 @@ function compare_input_to_output(distributions; show_plot = true)
         aspect_ratio = (10e3-10)/ymax,
         framestyle = :box,
         tickdirection = :out,
-        legend = :bottomright,
+        legend = true,
     )
     plot!(simulation_energy_bin_means, output_energy_spectrum,
         linetype = :steppost,
@@ -505,6 +505,41 @@ function compare_input_to_output(distributions; show_plot = true)
     )
     if show_plot == true; display("image/png",plot!()); end
     return plot!()
+end
+
+function plot_percent_change(distributions)
+    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
+    loss_cone_slice = pa_bin_edges[begin:end-1] .< SIMULATION_α_MAX
+
+    input = distributions[1,:,:]
+    output = dropdims(sum(distributions, dims = 1), dims = 1)
+
+    fraction_change = (output .- input) ./ input
+    percent_change = fraction_change .* 100
+
+    if any(percent_change .< 0); error("something is deeply wrong. pray for forgiveness."); end
+
+    heatmap(pa_bin_edges, log10.(energy_bin_edges), percent_change,
+        xlabel = "Pitch Angle, deg",
+        xlims = (0, SIMULATION_α_MAX),
+
+        ylabel = "Energy, eV",
+        ylims = (2, 4),
+        yticks = ([2, 3, 4], ["10²", "10³", "10⁴"]),
+
+        aspect_ratio = (180/2),
+
+        colorbar_title = "Percent Increase",
+        colormap = cgrad(:cherry, rev = true),
+        clims = (0, 100),
+
+        grid = false,
+        framestyle = :box,
+        background_color_outside = :transparent,
+        background_color_inside = :white,
+        dpi = 300
+    )
+    display("image/png", plot!())
 end
 
 function _multibounce_statistics_plot(distributions)
