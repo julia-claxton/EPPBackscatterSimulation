@@ -10,10 +10,11 @@ using Plots
 using Plots.PlotMeasures
 using DelimitedFiles
 using Glob
+include("./General_Functions.jl") # Provides general-purpose functions I find useful
 
 # ---------------- Backscatter Simulation Functions ----------------
 function multibounce_simulation(input_distribution, n_bounces; show_progress = true)
-    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
+    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
 
     distributions = zeros(n_bounces + 1, energy_nbins, pa_nbins)
     distributions[1,:,:] = input_distribution
@@ -25,7 +26,7 @@ function multibounce_simulation(input_distribution, n_bounces; show_progress = t
             reverse!(input_distribution, dims = 2) # Move the distribution from the antiloss cone to the loss cone
         end
 
-        distributions[i,:,:] = simulate_backscatter(input_distribution, show_progress = show_progress)
+        distributions[i,:,:] = simulate_backscatter(input_distribution, show_progress = show_progress) # TODO this will break
     end
     # Now we need to reverse the even bounces to get them in the correct cone from the persepctive of a stationary observer
     # Since we start at the 0th bounce, the 2nd, 4th, etc, bounces will be indexes 3, 5, 7, etc.
@@ -37,59 +38,130 @@ function multibounce_simulation(input_distribution, n_bounces; show_progress = t
     return distributions
 end
 
-function simulate_backscatter(input_distribution; show_progress = true)
-    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
+function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_beam_strengths = false, show_error = false, show_progress = false)
+    # e_bin_edges : description [keV]
+    # pa_bin_edges : description [deg]
+    # input_flux : ..... [1/(MeV str) * <arb>] for ELFIN, <arb> is #/(cm2)
 
-    # Create backscatter distribution
-    output_distribution = zeros(energy_nbins, pa_nbins)
-    pixels_to_simulate = findall(input_distribution .≠ 0) # Don't simulate pixels with zero input flux
+    # Guard block
+    @assert size(input_flux) == (length(e_bin_edges)-1, length(pa_bin_edges)-1) "Bin numbers $((length(e_bin_edges)-1, length(pa_bin_edges)-1)) do not match flux distribution size $(size(input_flux))"
+
+    # Calculate bin means
+    e_bin_means = edges_to_means(e_bin_edges)
+    pa_bin_means = edges_to_means(pa_bin_edges)
+
+    # Calculate number of particles (times <arb>) in each pixel of input distribution
+    ΔE = [(e_bin_edges[e+1] - e_bin_edges[e]) ./ 1000 for e in 1:length(e_bin_means)] # !!! ΔE IN MeV, E_BIN_EDGES IN keV !!!
+    ΔΩ = [2π * (cosd(pa_bin_edges[α]) - cosd(pa_bin_edges[α+1])) for α in 1:length(pa_bin_means)]
+    n_particles = [input_flux[e,α] * ΔE[e] * ΔΩ[α] for e in 1:length(e_bin_means), α in 1:length(pa_bin_means)]
+
+    # Load precalculated beams
+    backscatter_directory = "$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions"
+    backscatter_filepaths = glob("*deg.npz", backscatter_directory)
+    backscatter_filenames = replace.(backscatter_filepaths, "$(backscatter_directory)/" => "")
+
+    backscatter_energies = match.(r"(.*?)keV_", backscatter_filenames)
+    backscatter_energies = [backscatter_energies[i].captures[1] for i = eachindex(backscatter_energies)]
+    backscatter_energies = parse.(Int64, backscatter_energies)
+
+    backscatter_pitch_angles = match.(r"keV_(.*?)deg.npz", backscatter_filenames)
+    backscatter_pitch_angles = [backscatter_pitch_angles[i].captures[1] for i = eachindex(backscatter_pitch_angles)]
+    backscatter_pitch_angles = parse.(Int64, backscatter_pitch_angles)
+
+    # Preallocate result arrays
+    result_energy_nbins, _, _, result_pa_nbins, _, _, SIMULATION_α_MAX = get_simulation_bins()
+    output_distribution = zeros(result_energy_nbins, result_pa_nbins)
+    beam_coordinates = _get_beam_locations() # (E, pa)
+    beam_strengths = zeros(length(beam_coordinates))
+
+    # Simulate backscatter
+    pixels_to_simulate = findall(input_flux .≠ 0)
     for i = 1:length(pixels_to_simulate)
-        # Print progress to terminal
-        # But don't do it on every iteration because that's a big slowdown
+        # Print progress to terminal every so often
         if show_progress && ((i % 50 == 0) || (i == length(pixels_to_simulate)))
-            _print_progress_bar(i/length(pixels_to_simulate))
+            print_progress_bar(i/length(pixels_to_simulate))
         end
 
-        idx = pixels_to_simulate[i]
-        e_idx = idx[1]
-        α_idx = idx[2]
+        # Get energy and pitch angle of this pixel
+        pixel_coords = pixels_to_simulate[i]
+        e = e_bin_means[pixel_coords[1]] # Pixel energy
+        pa = pa_bin_means[pixel_coords[2]] # Pixel pitch angle
 
-        pixel_e = energy_bin_means[e_idx]
-        pixel_α = pa_bin_means[α_idx]
-        if pixel_α > SIMULATION_α_MAX; continue; end # Prebaked distributions only go to 70º with bin width = 5º
+        # Find nearest precalculated beam for this pixel
+        energy_differences = abs.(backscatter_energies .- e)
+        mindistance, _ = findmin(energy_differences)
+        energy_idxs = findall(energy_differences .== mindistance)
 
-        backscatter = _get_prebaked_backscatter(pixel_e, pixel_α) * input_distribution[idx]
-        @assert size(backscatter) == size(output_distribution) "Prebaked backscatter grid does not match simulation grid"
-        output_distribution .+= backscatter
+        pa_differences = abs.(backscatter_pitch_angles .- pa)
+        mindistance, _ = findmin(pa_differences)
+        pa_idxs = findall(pa_differences .== mindistance)
+
+        nearest_beam_idx = intersect(energy_idxs, pa_idxs)
+        nearest_beam_idx = nearest_beam_idx[1] # Extract index from 1-element vector. If we are exactly halfway between two or more beams, this will round down
+
+        nearest_e = backscatter_energies[nearest_beam_idx]
+        nearest_pa = backscatter_pitch_angles[nearest_beam_idx]
+
+        # Get backscatter
+        beam_backscatter = npzread("$(backscatter_directory)/$(backscatter_filenames[nearest_beam_idx])")
+        beam_backscatter = beam_backscatter["backscatter_distribution"]
+
+        # Zero out regions where we don't have precalculated beams
+        if ((0 <= pa <= SIMULATION_α_MAX) == false) || ((5 <= e <= 15e3) == false)
+            beam_backscatter .*= 0
+        end
+
+
+        # TODO ADJUST N_PARTICLES BY HOW MUCH WE SHIFTED IN ENERGY AND PA
+        
+
+
+
+
+
+
+        # Add pixel to beam strength arrays
+        beam_idx = findfirst(beam_coordinates .== [(nearest_e, nearest_pa)])
+        beam_strengths[beam_idx] += n_particles[pixel_coords]
+
+        # Add backscatter to result
+        output_distribution .+= beam_backscatter .* n_particles[pixel_coords]
     end
     if show_progress == true; println(); end
-    return output_distribution
+
+    # Calculate fitting error - i.e amount of energy gained or lost by process of snapping each input pixel to a beam that may be at a different energy/pitch angle
+    if show_error == true
+        fitted_flux = beams_to_flux(e_bin_edges, pa_bin_edges, beam_coordinates, beam_strengths)
+        fitted_total_energy = flux_to_total_energy(e_bin_edges, pa_bin_edges, fitted_flux)
+
+        input_culled = input_flux[:, pa_bin_edges[begin:end-1] .< SIMULATION_α_MAX]
+        input_total_energy = flux_to_total_energy(e_bin_edges, pa_bin_edges, input_culled)
+
+        fitting_error = (fitted_total_energy - input_total_energy) / input_total_energy
+        println("Fit energy = $(round(fitting_error*100, sigdigits = 2))% input energy")
+    end
+    # Return
+    if return_beam_strengths == true
+        return output_distribution, beam_coordinates, beam_strengths
+    else
+        return output_distribution
+    end
 end
 
 function atmosphere_loss_rate(distributions)
+    # Use least-squares regression to estimate loss rate of particles to atomsphere in a multibounce distribution
     n_particles = sum.(eachslice(distributions, dims = 1))
-    loss_fraction = 1 .- [n_particles[i+1] / n_particles[i] for i = 1:length(n_particles)-1]
-    return mean(loss_fraction[isfinite.(loss_fraction)])
+
+    if length(n_particles) == 1; return NaN; end
+
+    A = hcat(1:length(n_particles), ones(length(n_particles))) # Matrix A for least squares problem y = Ac
+    remaining_factor_logspace, _ = A \ log10.(n_particles)
+
+    loss_rate = 1 - (10^remaining_factor_logspace)
+    return loss_rate
 end
 
-function _get_prebaked_backscatter(input_energy, input_pa)
-    # Given a pitch angle and energy of an input electron beam, retrieves nearest precalculated backscatter distribution. Code 
-    # adapted from https://github.com/GrantBerland/G4EPP/blob/main/G4EPP/examples/invert_ELFIN_measurements.ipynb and ported
-    # to Julia by me.
-    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
-    
-    # Kick out bad inputs
-    if (length(input_energy) != 1) || (length(input_pa) != 1)
-        error("Input energy and pitch angle must have length 1")
-    end
-    if (5 <= input_energy <= 15e3) == false # Data is provided from 10keV to 10e3keV, adding some margin
-        return zeros(energy_nbins, pa_nbins)
-    end
-    if (0 <= input_pa <= SIMULATION_α_MAX) == false
-        return zeros(energy_nbins, pa_nbins)
-    end
-
-    # Find precalculated beam energies and pitch angles
+function _get_beam_locations()
     backscatter_directory = "$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions"
     backscatter_filepaths = glob("*deg.npz", backscatter_directory)
     backscatter_filenames = replace.(backscatter_filepaths, "$(backscatter_directory)/" => "")
@@ -104,26 +176,11 @@ function _get_prebaked_backscatter(input_energy, input_pa)
     backscatter_pitch_angles = [backscatter_pitch_angles[i].captures[1] for i = eachindex(backscatter_pitch_angles)]
     backscatter_pitch_angles = parse.(Int64, backscatter_pitch_angles)
 
-    # Match input to nearest precalculated beam
-    energy_differences = abs.(backscatter_energies .- input_energy)
-    mindistance, _ = findmin(energy_differences)
-    energy_idxs = findall(energy_differences .== mindistance)
-
-    pa_differences = abs.(backscatter_pitch_angles .- input_pa)
-    mindistance, _ = findmin(pa_differences)
-    pa_idxs = findall(pa_differences .== mindistance)
-
-    nearest_beam_idx = intersect(energy_idxs, pa_idxs)
-    nearest_beam_idx = nearest_beam_idx[1] # Extract index from 1-element vector. If we are exactly halfway between two or more beams, this will round down
-
-    filename = backscatter_filenames[nearest_beam_idx]
-
-    # Return prebaked backscatter distribution
-    data = npzread("$(backscatter_directory)/$(filename)")
-    return data["backscatter_distribution"]
+    # Return
+    return collect(zip(backscatter_energies, backscatter_pitch_angles))
 end
 
-function get_data_bins()
+function get_simulation_bins()
     data_bins = npzread("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions/data_bins.npz")
 
     energy_nbins = data_bins["energy_nbins"]
@@ -134,13 +191,13 @@ function get_data_bins()
     pa_bin_edges = data_bins["pa_bin_edges"]
     pa_bin_means = data_bins["pa_bin_means"]
 
-    SIMULATION_α_MAX = 72.5
+    SIMULATION_α_MAX = 77.5
 
     return energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX
 end
 
 # ---------------- Backscatter Binning Functions ----------------
-function bin_backscatter_data(energy_nbins, pa_nbins)
+function set_simulation_bins(; energy_nbins = 35, pa_nbins = 100, debug = false)
     # Calculate bins
     energy_bin_edges = 10 .^ LinRange(1, 4, energy_nbins + 1)
     pa_bin_edges = LinRange(0, 180, pa_nbins + 1)
@@ -172,13 +229,39 @@ function bin_backscatter_data(energy_nbins, pa_nbins)
     println("\tPitch Angle Bins = $(pa_nbins)")
 
     for i = 1:length(backscatter_filenames)
-        _print_progress_bar(i/length(backscatter_filenames))
+        print_progress_bar(i/length(backscatter_filenames))
         _prebake_backscatter_file(backscatter_filenames[i], backscatter_data_directory)
     end
     println("\n")
+
+    # Show debug info if needed
+    if debug == true
+        # Show all input beams
+        energies = [parse(Int64, match.(r"bs_spectra(.*?)keV", backscatter_filenames[i])[1]) for i = eachindex(backscatter_filenames)]
+        pitch_angles = [parse(Int64, match.(r"PAD(.*?).csv", backscatter_filenames[i])[1]) for i = eachindex(backscatter_filenames)]
+
+        plot(
+            title = "Input Beams",
+
+            xlabel = "Pitch Angle, deg",
+            xlims = (0, 180),
+
+            ylabel = "Energy, keV",
+            ylims = (10, 1e4),
+            yscale = :log10,
+
+            grid = false
+        )
+        hline!(energy_bin_edges, linecolor = RGB(.8,.8,.8), label = false)
+        vline!(pa_bin_edges, linecolor = RGB(.8,.8,.8), label = false)
+        scatter!(pitch_angles, energies, label = false, color = :black)
+        display(plot!())
+    end
 end
 
 function _prebake_backscatter_file(filename, backscatter_data_directory)
+    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
+
     # Get beam parameters from filename
     energy = match.(r"bs_spectra(.*?)keV", filename)[1]
     energy = parse(Int64, energy)
@@ -186,7 +269,7 @@ function _prebake_backscatter_file(filename, backscatter_data_directory)
     pitch_angle = match.(r"PAD(.*?).csv", filename)[1]
     pitch_angle = parse(Int64, pitch_angle)
 
-    backscatter_distribution = _get_single_beam_backscatter(filename, backscatter_data_directory)
+    backscatter_distribution = _get_single_beam_backscatter(filename, backscatter_data_directory, energy_bin_edges, pa_bin_edges)
 
     npzwrite("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions/$(energy)keV_$(pitch_angle)deg.npz",
         energy_bin_edges = energy_bin_edges,
@@ -195,7 +278,7 @@ function _prebake_backscatter_file(filename, backscatter_data_directory)
     )
 end
 
-function _get_single_beam_backscatter(filename, backscatter_data_directory)
+function _get_single_beam_backscatter(filename, backscatter_data_directory, energy_bin_edges, pa_bin_edges)
     # Given a pitch angle and energy of an input electron beam, retrieves nearest precalculated backscatter distribution. Code 
     # adapted from https://github.com/GrantBerland/G4EPP/blob/main/G4EPP/examples/invert_ELFIN_measurements.ipynb and ported
     # to Julia by me.
@@ -225,12 +308,12 @@ function _get_single_beam_backscatter(filename, backscatter_data_directory)
     # Calculate pitch angle
     particle_pitch_angles = rad2deg.(atan.(sqrt.(px.^2 + py.^2), pz))
 
-    return _exact_2dhistogram(particle_energies, particle_pitch_angles, energy_bin_edges, pa_bin_edges) ./ 1e5 # To make units match with input
+    return _exact_2dhistogram(particle_energies, particle_pitch_angles, energy_bin_edges, pa_bin_edges) ./ 1e5 # /1e5 to make units match with input
 end
 
 # ---------------- Plotting Functions ----------------
 function plot_distribution(distribution)
-    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
+    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
 
     xlims = (0, 180)
     Δx = xlims[2] - xlims[1]
@@ -263,7 +346,7 @@ function plot_distribution(distribution)
 end
 
 function individual_bounce_plots(distributions; noisegate = -Inf)
-    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
+    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
 
     n_plots = length(distributions[:,1,1])
     plots = []
@@ -352,7 +435,7 @@ function individual_bounce_plots(distributions; noisegate = -Inf)
 end
 
 function compare_input_to_output(distributions; show_plot = true)
-    simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_data_bins()
+    simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
 
     n_bounces = size(distributions)[1] - 1
     
@@ -508,7 +591,7 @@ function compare_input_to_output(distributions; show_plot = true)
 end
 
 function plot_percent_change(distributions)
-    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_data_bins()
+    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
     loss_cone_slice = pa_bin_edges[begin:end-1] .< SIMULATION_α_MAX
 
     input = distributions[1,:,:]
@@ -543,7 +626,7 @@ function plot_percent_change(distributions)
 end
 
 function _multibounce_statistics_plot(distributions)
-    simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_data_bins()
+    simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
 
     n_distros = size(distributions)[1]
 
@@ -612,39 +695,4 @@ function _multibounce_statistics_plot(distributions)
         background = :transparent
     )
     return plot!()
-end
-# ---------------- General Use Helpful Functions ----------------
-function _print_progress_bar(fraction; bar_length = 20, overwrite = true)
-# Prints a progress bar to terminal filled to user-specified percentage.
-    character_length = 1/bar_length
-    number_of_filled_characters = Int(floor(fraction/character_length))
-    if overwrite == true; print("\r"); end
-    print(repeat("█", number_of_filled_characters))
-    print(repeat("░", bar_length - number_of_filled_characters))
-    print(" [$(round(fraction*100, digits = 1))%]")
-end
-
-function _bin_edges_to_means(edges)
-# Calculates means of bins given their edges.
-    return [mean([edges[i], edges[i+1]]) for i = 1:length(edges)-1] 
-end
-
-function _exact_2dhistogram(x, y, x_bin_edges, y_bin_edges; weights = ones(length(x)))
-# Bin 2D data into a histogram with bin edges defined by user.
-    @assert length(x) == length(y) == length(weights) "x, y, and weight vectors must be same length"
-
-    x_nbins = length(x_bin_edges) - 1
-    y_nbins = length(y_bin_edges) - 1
-    
-    result = zeros(x_nbins, y_nbins)
-    
-    for x_idx = 1:x_nbins
-        x_slice = x_bin_edges[x_idx] .<= x .< x_bin_edges[x_idx+1]
-        for y_idx = 1:y_nbins
-            y_slice = y_bin_edges[y_idx] .<= y .< y_bin_edges[y_idx+1]
-            slice = x_slice .&& y_slice
-            result[x_idx, y_idx] = sum(weights[slice])
-        end
-    end
-    return result
 end
