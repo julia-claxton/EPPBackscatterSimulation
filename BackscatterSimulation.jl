@@ -13,8 +13,9 @@ using Glob
 include("./General_Functions.jl") # Provides general-purpose functions I find useful
 
 # ---------------- Backscatter Simulation Functions ----------------
-function multibounce_simulation(input_distribution, n_bounces; show_progress = true)
+function multibounce_simulation(input_distribution, n_bounces; show_progress = false)
     energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
+    @assert size(input_distribution) == (energy_nbins, pa_nbins) "Multibounce simulation requires input to be on simulation grid (E = $energy_nbins bins, α = $pa_nbins bins). Use set_simulation_bins() to change these bins."
 
     distributions = zeros(n_bounces + 1, energy_nbins, pa_nbins)
     distributions[1,:,:] = input_distribution
@@ -26,7 +27,8 @@ function multibounce_simulation(input_distribution, n_bounces; show_progress = t
             reverse!(input_distribution, dims = 2) # Move the distribution from the antiloss cone to the loss cone
         end
 
-        distributions[i,:,:] = simulate_backscatter(input_distribution, show_progress = show_progress) # TODO this will break
+        distributions[i,:,:], loc, str = simulate_NH_backscatter(energy_bin_edges, pa_bin_edges, input_distribution, show_progress = show_progress, show_error = true, return_beam_strengths = true)
+        show_beams(loc,str)
     end
     # Now we need to reverse the even bounces to get them in the correct cone from the persepctive of a stationary observer
     # Since we start at the 0th bounce, the 2nd, 4th, etc, bounces will be indexes 3, 5, 7, etc.
@@ -53,7 +55,7 @@ function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_b
     # Calculate number of particles (times <arb>) in each pixel of input distribution
     ΔE = [(e_bin_edges[e+1] - e_bin_edges[e]) ./ 1000 for e in 1:length(e_bin_means)] # !!! ΔE IN MeV, E_BIN_EDGES IN keV !!!
     ΔΩ = [2π * (cosd(pa_bin_edges[α]) - cosd(pa_bin_edges[α+1])) for α in 1:length(pa_bin_means)]
-    n_particles = [input_flux[e,α] * ΔE[e] * ΔΩ[α] for e in 1:length(e_bin_means), α in 1:length(pa_bin_means)]
+    n_particles_input = [input_flux[e,α] * ΔE[e] * ΔΩ[α] for e in 1:length(e_bin_means), α in 1:length(pa_bin_means)]
 
     # Load precalculated beams
     backscatter_directory = "$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions"
@@ -71,6 +73,7 @@ function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_b
     # Preallocate result arrays
     result_energy_nbins, _, _, result_pa_nbins, _, _, SIMULATION_α_MAX = get_simulation_bins()
     output_distribution = zeros(result_energy_nbins, result_pa_nbins)
+    n_particles_fit = copy(n_particles_input) .* 0
     beam_coordinates = _get_beam_locations() # (E, pa)
     beam_strengths = zeros(length(beam_coordinates))
 
@@ -111,35 +114,38 @@ function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_b
             beam_backscatter .*= 0
         end
 
-
-        # TODO ADJUST N_PARTICLES BY HOW MUCH WE SHIFTED IN ENERGY AND PA
-        
-
-
-
-
-
+        # If the process of snapping the pixel to the nearest beam moves its energy bin,
+        # adjust n_particles accordingly to make energy integral equal for input and fit
+        old_e_idx = findlast(e .≥ e_bin_edges[1:end-1])
+        new_e_idx = findlast(nearest_e .≥ e_bin_edges[1:end-1])
+        n_particles_fit[pixel_coords] = n_particles_input[pixel_coords] * (e_bin_means[old_e_idx] / e_bin_means[new_e_idx])
 
         # Add pixel to beam strength arrays
         beam_idx = findfirst(beam_coordinates .== [(nearest_e, nearest_pa)])
-        beam_strengths[beam_idx] += n_particles[pixel_coords]
+        beam_strengths[beam_idx] += n_particles_fit[pixel_coords]
 
         # Add backscatter to result
-        output_distribution .+= beam_backscatter .* n_particles[pixel_coords]
+        output_distribution .+= beam_backscatter .* n_particles_fit[pixel_coords]
     end
     if show_progress == true; println(); end
 
     # Calculate fitting error - i.e amount of energy gained or lost by process of snapping each input pixel to a beam that may be at a different energy/pitch angle
     if show_error == true
         fitted_flux = beams_to_flux(e_bin_edges, pa_bin_edges, beam_coordinates, beam_strengths)
-        fitted_total_energy = flux_to_total_energy(e_bin_edges, pa_bin_edges, fitted_flux)
+        fitted_total_energy = sum([beam_strengths[i] * beam_coordinates[i][1] for i in eachindex(beam_strengths)])
+        fitted_total_particles = sum(n_particles_fit)
 
-        input_culled = input_flux[:, pa_bin_edges[begin:end-1] .< SIMULATION_α_MAX]
-        input_total_energy = flux_to_total_energy(e_bin_edges, pa_bin_edges, input_culled)
+        input_culled = input_flux[:, pa_bin_means .< SIMULATION_α_MAX]
+        input_total_energy = sum([n_particles_input[e,α]*e_bin_means[e] for e in 1:length(e_bin_means), α in 1:length(pa_bin_means)])
+        input_total_particles = sum(n_particles_input)
+        
+        energy_fitting_error = fitted_total_energy / input_total_energy
+        println("fit energy = $(round(energy_fitting_error, sigdigits = 3)) x input energy")
 
-        fitting_error = (fitted_total_energy - input_total_energy) / input_total_energy
-        println("Fit energy = $(round(fitting_error*100, sigdigits = 2))% input energy")
+        particle_fitting_error = fitted_total_particles / input_total_particles
+        println("fit particles = $(round(particle_fitting_error, sigdigits = 3)) x input particles")
     end
+    
     # Return
     if return_beam_strengths == true
         return output_distribution, beam_coordinates, beam_strengths
@@ -345,6 +351,33 @@ function plot_distribution(distribution)
     display(plot!())
 end
 
+function show_beams(locations, strengths; clims = (0, max(log10.(strengths)...)))
+    data_color = replace(log10.(strengths), -Inf => -100) # -Inf breaks the zcolor argument
+    scatter(beams,
+        label = false,
+        zcolor = data_color,
+        colormap = :magma,
+        markerstrokewidth = 0,
+
+        title = "Input Beams",
+
+        xlabel = "Energy, keV",
+        xscale = :log10,
+
+        ylabel = "Pitch Angle, deg",
+        ylims = (0, 180),
+
+        colorbar_title = "Log10 Beam Strength",
+        clims = clims,
+
+        permute = (:y, :x), # Swap x & y axes
+        background_color_inside = :black,
+        grid = false,
+        dpi = 300
+    )
+    display(plot!())
+end
+
 function individual_bounce_plots(distributions; noisegate = -Inf)
     energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
 
@@ -431,7 +464,7 @@ function individual_bounce_plots(distributions; noisegate = -Inf)
         background = :transparent,
         dpi = 300
     )
-    display("image/png",plot!())
+    display(plot!())
 end
 
 function compare_input_to_output(distributions; show_plot = true)
@@ -586,7 +619,7 @@ function compare_input_to_output(distributions; show_plot = true)
         size = (1, 1.25) .* 700,
         dpi = 300
     )
-    if show_plot == true; display("image/png",plot!()); end
+    if show_plot == true; display(plot!()); end
     return plot!()
 end
 
@@ -622,7 +655,7 @@ function plot_percent_change(distributions)
         background_color_inside = :white,
         dpi = 300
     )
-    display("image/png", plot!())
+    display(plot!())
 end
 
 function _multibounce_statistics_plot(distributions)
