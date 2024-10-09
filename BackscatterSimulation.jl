@@ -27,8 +27,7 @@ function multibounce_simulation(input_distribution, n_bounces; show_progress = f
             reverse!(input_distribution, dims = 2) # Move the distribution from the antiloss cone to the loss cone
         end
 
-        distributions[i,:,:], loc, str = simulate_NH_backscatter(energy_bin_edges, pa_bin_edges, input_distribution, show_progress = show_progress, show_error = true, return_beam_strengths = true)
-        show_beams(loc,str)
+        distributions[i,:,:] = simulate_NH_backscatter(energy_bin_edges, pa_bin_edges, input_distribution, show_progress = show_progress)
     end
     # Now we need to reverse the even bounces to get them in the correct cone from the persepctive of a stationary observer
     # Since we start at the 0th bounce, the 2nd, 4th, etc, bounces will be indexes 3, 5, 7, etc.
@@ -40,7 +39,7 @@ function multibounce_simulation(input_distribution, n_bounces; show_progress = f
     return distributions
 end
 
-function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_beam_strengths = false, show_error = false, show_progress = false)
+function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_beams = false, show_error = false, show_progress = false)
     # e_bin_edges : description [keV]
     # pa_bin_edges : description [deg]
     # input_flux : ..... [1/(MeV str) * <arb>] for ELFIN, <arb> is #/(cm2)
@@ -53,8 +52,8 @@ function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_b
     pa_bin_means = edges_to_means(pa_bin_edges)
 
     # Calculate number of particles (times <arb>) in each pixel of input distribution
-    ΔE = [(e_bin_edges[e+1] - e_bin_edges[e]) ./ 1000 for e in 1:length(e_bin_means)] # !!! ΔE IN MeV, E_BIN_EDGES IN keV !!!
-    ΔΩ = [2π * (cosd(pa_bin_edges[α]) - cosd(pa_bin_edges[α+1])) for α in 1:length(pa_bin_means)]
+    ΔE = [(e_bin_edges[e+1] - e_bin_edges[e]) ./ 1000 for e in 1:length(e_bin_means)] # ΔE in MeV, e_bin_edges in keV - division by 1000 is to convert to MeV
+    ΔΩ = [2π * (cosd(pa_bin_edges[α]) - cosd(pa_bin_edges[α+1])) for α in 1:length(pa_bin_means)] # str
     n_particles_input = [input_flux[e,α] * ΔE[e] * ΔΩ[α] for e in 1:length(e_bin_means), α in 1:length(pa_bin_means)]
 
     # Load precalculated beams
@@ -119,7 +118,7 @@ function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_b
         old_e_idx = findlast(e .≥ e_bin_edges[1:end-1])
         new_e_idx = findlast(nearest_e .≥ e_bin_edges[1:end-1])
         n_particles_fit[pixel_coords] = n_particles_input[pixel_coords] * (e_bin_means[old_e_idx] / e_bin_means[new_e_idx])
-
+        
         # Add pixel to beam strength arrays
         beam_idx = findfirst(beam_coordinates .== [(nearest_e, nearest_pa)])
         beam_strengths[beam_idx] += n_particles_fit[pixel_coords]
@@ -129,9 +128,8 @@ function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_b
     end
     if show_progress == true; println(); end
 
-    # Calculate fitting error - i.e amount of energy gained or lost by process of snapping each input pixel to a beam that may be at a different energy/pitch angle
+    # Calculate fitting error - i.e amount of energy gained or lost by process of snapping each input pixel to a beam that may be at a different energy
     if show_error == true
-        fitted_flux = beams_to_flux(e_bin_edges, pa_bin_edges, beam_coordinates, beam_strengths)
         fitted_total_energy = sum([beam_strengths[i] * beam_coordinates[i][1] for i in eachindex(beam_strengths)])
         fitted_total_particles = sum(n_particles_fit)
 
@@ -147,7 +145,7 @@ function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_b
     end
     
     # Return
-    if return_beam_strengths == true
+    if return_beams == true
         return output_distribution, beam_coordinates, beam_strengths
     else
         return output_distribution
@@ -212,11 +210,11 @@ function set_simulation_bins(; energy_nbins = 35, pa_nbins = 100, debug = false)
     npzwrite("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions/data_bins.npz",
         energy_nbins = energy_nbins,
         energy_bin_edges = energy_bin_edges,
-        energy_bin_means = _bin_edges_to_means(energy_bin_edges),
+        energy_bin_means = edges_to_means(energy_bin_edges),
 
         pa_nbins = pa_nbins,
         pa_bin_edges = pa_bin_edges,
-        pa_bin_means = _bin_edges_to_means(pa_bin_edges)
+        pa_bin_means = edges_to_means(pa_bin_edges)
     )
 
     # Find backscatter data
@@ -275,7 +273,7 @@ function _prebake_backscatter_file(filename, backscatter_data_directory)
     pitch_angle = match.(r"PAD(.*?).csv", filename)[1]
     pitch_angle = parse(Int64, pitch_angle)
 
-    backscatter_distribution = _get_single_beam_backscatter(filename, backscatter_data_directory, energy_bin_edges, pa_bin_edges)
+    backscatter_distribution = _calculate_beam_backscatter(filename, backscatter_data_directory, energy_bin_edges, pa_bin_edges)
 
     npzwrite("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions/$(energy)keV_$(pitch_angle)deg.npz",
         energy_bin_edges = energy_bin_edges,
@@ -284,7 +282,7 @@ function _prebake_backscatter_file(filename, backscatter_data_directory)
     )
 end
 
-function _get_single_beam_backscatter(filename, backscatter_data_directory, energy_bin_edges, pa_bin_edges)
+function _calculate_beam_backscatter(filename, backscatter_data_directory, energy_bin_edges, pa_bin_edges)
     # Given a pitch angle and energy of an input electron beam, retrieves nearest precalculated backscatter distribution. Code 
     # adapted from https://github.com/GrantBerland/G4EPP/blob/main/G4EPP/examples/invert_ELFIN_measurements.ipynb and ported
     # to Julia by me.
@@ -314,7 +312,14 @@ function _get_single_beam_backscatter(filename, backscatter_data_directory, ener
     # Calculate pitch angle
     particle_pitch_angles = rad2deg.(atan.(sqrt.(px.^2 + py.^2), pz))
 
-    return _exact_2dhistogram(particle_energies, particle_pitch_angles, energy_bin_edges, pa_bin_edges) ./ 1e5 # /1e5 to make units match with input
+    # Get distribution and convert number of particles per bin to a flux value
+    n_particles_distribution = exact_2dhistogram(particle_energies, particle_pitch_angles, energy_bin_edges, pa_bin_edges) ./ 1e5 # /1e5 to make input unit be 1 particle
+    ΔE = [(energy_bin_edges[e+1] - energy_bin_edges[e]) / 1000 for e in 1:length(energy_bin_edges)-1] # ΔE in MeV, e_bin_edges in keV - division by 1000 is to convert to MeV
+    ΔΩ = [2π * (cosd(pa_bin_edges[α]) - cosd(pa_bin_edges[α+1])) for α in 1:length(pa_bin_edges)-1] # Str
+    flux_distribution = [n_particles_distribution[e,α] / (ΔE[e] * ΔΩ[α]) for e in 1:length(energy_bin_edges)-1, α in 1:length(pa_bin_edges)-1]
+
+    # Return
+    return flux_distribution
 end
 
 # ---------------- Plotting Functions ----------------
@@ -353,7 +358,7 @@ end
 
 function show_beams(locations, strengths; clims = (0, max(log10.(strengths)...)))
     data_color = replace(log10.(strengths), -Inf => -100) # -Inf breaks the zcolor argument
-    scatter(beams,
+    scatter(locations,
         label = false,
         zcolor = data_color,
         colormap = :magma,
