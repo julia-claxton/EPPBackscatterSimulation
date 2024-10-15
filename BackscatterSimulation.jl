@@ -12,6 +12,7 @@ using DelimitedFiles
 using Glob
 include("./General_Functions.jl") # Provides general-purpose functions I find useful
 
+
 # ---------------- Backscatter Simulation Functions ----------------
 function multibounce_simulation(input_distribution, n_bounces; show_progress = false)
     energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
@@ -154,12 +155,19 @@ end
 
 function atmosphere_loss_rate(distributions)
     # Use least-squares regression to estimate loss rate of particles to atomsphere in a multibounce distribution
-    n_particles = sum.(eachslice(distributions, dims = 1))
+    n_distros = size(distributions)[1]
+    total_energy = zeros(n_distros)
+    total_particles = zeros(n_distros)
+    for i in 1:n_distros
+        distro_energy, distro_particles = _integrate_distribution(simulation_energy_bin_edges, simulation_pa_bin_edges, distributions[i,:,:])
+        total_particles[i] = distro_particles
+        total_energy[i] = distro_energy
+    end
 
-    if length(n_particles) == 1; return NaN; end
+    if length(total_particles) == 1; return NaN; end
 
-    A = hcat(1:length(n_particles), ones(length(n_particles))) # Matrix A for least squares problem y = Ac
-    remaining_factor_logspace, _ = A \ log10.(n_particles)
+    A = hcat(1:length(total_particles), ones(length(total_particles))) # A matrix for least squares problem y = Ac
+    remaining_factor_logspace, _ = A \ log10.(total_particles)
 
     loss_rate = 1 - (10^remaining_factor_logspace)
     return loss_rate
@@ -182,6 +190,19 @@ function _get_beam_locations()
 
     # Return
     return collect(zip(backscatter_energies, backscatter_pitch_angles))
+end
+
+function _integrate_distribution(e_edges, pa_edges, distribution)
+    e_means = edges_to_means(e_edges)
+    pa_means = edges_to_means(pa_edges)
+
+    ΔE = [(e_edges[e+1] - e_edges[e])/1000 for e in 1:length(e_means)]
+    ΔΩ = [2π * (cosd(pa_edges[α]) - cosd(pa_edges[α+1])) for α in 1:length(pa_means)]
+
+    particles = sum([distribution[e,α] * ΔE[e] * ΔΩ[α] for e in 1:length(e_means), α in 1:length(pa_means)])
+    energy = sum([e_means[e] * distribution[e,α] * ΔE[e] * ΔΩ[α] for e in 1:length(e_means), α in 1:length(pa_means)])
+
+    return energy, particles
 end
 
 function get_simulation_bins()
@@ -340,7 +361,7 @@ function plot_distribution(distribution)
         ylims = ylims,
         yticks = ([1, 2, 3, 4], ["10¹", "10²", "10³", "10⁴"]),
 
-        colorbar_title = "\nLog10 # Electrons",
+        colorbar_title = "\nLog10 Flux, <arb>⋅#/(MeV str)",
         colormap = :haline,
 
         aspect_ratio = Δx/Δy,
@@ -372,7 +393,7 @@ function show_beams(locations, strengths; clims = (0, max(log10.(strengths)...))
         ylabel = "Pitch Angle, deg",
         ylims = (0, 180),
 
-        colorbar_title = "Log10 Beam Strength",
+        colorbar_title = "Log10 Beam Strength (# e-)",
         clims = clims,
 
         permute = (:y, :x), # Swap x & y axes
@@ -385,6 +406,8 @@ end
 
 function individual_bounce_plots(distributions; noisegate = -Inf)
     energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
+
+    error("This has a bunch of crap wrong with the units. Fix before using")
 
     n_plots = length(distributions[:,1,1])
     plots = []
@@ -476,14 +499,21 @@ function compare_input_to_output(distributions; show_plot = true)
     simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
 
     n_bounces = size(distributions)[1] - 1
-    
+
+    ΔE = [(simulation_energy_bin_edges[e+1] - simulation_energy_bin_edges[e])/1000 for e in 1:simulation_energy_nbins]
+    ΔΩ = [2π * (cosd(simulation_pa_bin_edges[α]) - cosd(simulation_pa_bin_edges[α+1])) for α in 1:simulation_pa_nbins]
+    e_spectrum(distribution) = dropdims(sum([distribution[e,α] * ΔE[e] * ΔΩ[α] for e in 1:simulation_energy_nbins, α in 1:simulation_pa_nbins], dims = 2), dims = 2)
+    pa_spectrum(distribution) = dropdims(sum([distribution[e,α] * ΔE[e] * ΔΩ[α] for e in 1:simulation_energy_nbins, α in 1:simulation_pa_nbins], dims = 1), dims = 1)
+
     input = distributions[1,:,:]
-    input_energy_spectrum = dropdims(sum(input, dims = 2), dims = 2)
-    input_pa_spectrum = dropdims(sum(input, dims = 1), dims = 1)
+    input_energy_spectrum = e_spectrum(input)
+    input_pa_spectrum = pa_spectrum(input)
+    input_energy_flux = [input[e,α] * simulation_energy_bin_means[e] for e in 1:simulation_energy_nbins, α in 1:simulation_pa_nbins]
 
     output = dropdims(sum(distributions, dims = 1), dims = 1)
-    output_energy_spectrum = dropdims(sum(output, dims = 2), dims = 2)
-    output_pa_spectrum = dropdims(sum(output, dims = 1), dims = 1)
+    output_energy_spectrum = e_spectrum(output)
+    output_pa_spectrum = pa_spectrum(output)
+    output_energy_flux = [output[e,α] * simulation_energy_bin_means[e] for e in 1:simulation_energy_nbins, α in 1:simulation_pa_nbins]
 
     # Input heatmap
     xlims = (0, 180)
@@ -492,9 +522,9 @@ function compare_input_to_output(distributions; show_plot = true)
     ylims = log10.([10, 1e4])
     Δy = ylims[2] - ylims[1]
 
-    cmax = log10(max(input[input .≠ 0]..., output[output .≠ 0]...))
+    cmax = log10(max(input_energy_flux[input_energy_flux .≠ 0]..., output_energy_flux[output_energy_flux .≠ 0]...))
     clims = (cmax-4, cmax)
-    heatmap(simulation_pa_bin_edges, log10.(simulation_energy_bin_edges), log10.(input),
+    heatmap(simulation_pa_bin_edges, log10.(simulation_energy_bin_edges), log10.(input_energy_flux),
         title = "Input",
 
         xlabel = "Pitch Angle, deg",
@@ -504,11 +534,12 @@ function compare_input_to_output(distributions; show_plot = true)
         ylims = ylims,
         yticks = ([1, 2, 3, 4], ["10¹", "10²", "10³", "10⁴"]),
 
-        colorbar_title = "Log10 # Electrons",
+        colorbar_title = "Log10 Energy Flux\n(<arb> ⋅ keV/(MeV Str)",
         clims = clims,
         colormap = :haline,
 
         leftmargin = 10mm,
+        rightmargin = 10mm,
 
         aspect_ratio = Δx/Δy,
         background_color_inside = :black,
@@ -520,7 +551,7 @@ function compare_input_to_output(distributions; show_plot = true)
     input_heatmap = plot!()
 
     # Output heatmap
-    heatmap(simulation_pa_bin_edges, log10.(simulation_energy_bin_edges), log10.(output),
+    heatmap(simulation_pa_bin_edges, log10.(simulation_energy_bin_edges), log10.(output_energy_flux),
         title = "$(n_bounces) Bounce Output",
 
         xlabel = "Pitch Angle, deg",
@@ -530,9 +561,11 @@ function compare_input_to_output(distributions; show_plot = true)
         ylims = ylims,
         yticks = ([1, 2, 3, 4], ["10¹", "10²", "10³", "10⁴"]),
 
-        colorbar_title = "Log10 # Electrons",
+        colorbar_title = "Log10 Energy Flux\n(<arb> ⋅ keV/(MeV Str)",
         clims = clims,
         colormap = :haline,
+
+        rightmargin = 5mm,
 
         aspect_ratio = Δx/Δy,
         background_color_inside = :black,
@@ -544,8 +577,8 @@ function compare_input_to_output(distributions; show_plot = true)
     output_heatmap = plot!()
 
     # Energy spectrum
-    ymax = max(input_energy_spectrum...) * 1.2 #max(cat(input_energy_spectrum, output_energy_spectrum, dims = 1)...)*1.1
-    plot(simulation_energy_bin_means, input_energy_spectrum,
+    ymax = max(cat(input_energy_spectrum, output_energy_spectrum, dims = 1)...)*1.1
+    plot(input_energy_spectrum, simulation_energy_bin_means,
         title = "Energy Spectrum",
 
         linetype = :steppost,
@@ -554,32 +587,31 @@ function compare_input_to_output(distributions; show_plot = true)
         linewidth = 1.4,
         label = "Input",
 
-        xlabel = "Energy",
-        xlims = (10, 10e3),
-        xscale = :log10,
+        xlabel = "# electrons",
+        xlims = (0, ymax),
 
-        ylabel = "# Electrons",
-        ylims = (0, ymax),
+        ylabel = "Energy",
+        ylims = (10, 10e3),
+        yscale = :log10,
 
         topmargin = 5mm,
         
-        aspect_ratio = (10e3-10)/ymax,
+        aspect_ratio = ymax/(10e3-10),
         framestyle = :box,
         tickdirection = :out,
-        legend = true,
+        legend = false,
     )
-    plot!(simulation_energy_bin_means, output_energy_spectrum,
+    plot!(output_energy_spectrum, simulation_energy_bin_means,
         linetype = :steppost,
         linecolor = :black,
         linestyle = :solid,
         linewidth = 1.4,
         label = "Output",
-
     )
     e_plot = plot!()
 
     # PA spectrum
-    ymax = max(input_pa_spectrum...) * 1.2 #max(cat(input_pa_spectrum, output_pa_spectrum, dims = 1)...)*1.1
+    ymax = max(cat(input_pa_spectrum, output_pa_spectrum, dims = 1)...)*1.1
     plot(simulation_pa_bin_means, input_pa_spectrum,
         title = "Pitch Angle Spectrum",
                 
@@ -592,7 +624,7 @@ function compare_input_to_output(distributions; show_plot = true)
         xlabel = "Pitch Angle",
         xlims = (0, 180),
 
-        ylabel = "# Electrons",
+        ylabel = "# electrons",
         ylims = (0, ymax),
 
         topmargin = 5mm,
@@ -600,7 +632,7 @@ function compare_input_to_output(distributions; show_plot = true)
         aspect_ratio = 180/ymax,
         framestyle = :box,
         tickdirection = :out,
-        legend = false,
+        legend = :outerright,
     )
     plot!(simulation_pa_bin_means, output_pa_spectrum,
         linetype = :steppost,
@@ -630,7 +662,7 @@ end
 
 function plot_percent_change(distributions)
     energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
-    loss_cone_slice = pa_bin_edges[begin:end-1] .< SIMULATION_α_MAX
+    loss_cone_slice = pa_bin_edges[begin:end-1] .< 67 # Approx. loss cone angle for simulation
 
     input = distributions[1,:,:]
     output = dropdims(sum(distributions, dims = 1), dims = 1)
@@ -650,7 +682,7 @@ function plot_percent_change(distributions)
 
         aspect_ratio = (180/2),
 
-        colorbar_title = "Percent Increase",
+        colorbar_title = "Flux Increase (%)",
         colormap = cgrad(:cherry, rev = true),
         clims = (0, 100),
 
@@ -668,22 +700,18 @@ function _multibounce_statistics_plot(distributions)
 
     n_distros = size(distributions)[1]
 
-    n_particles = sum.(eachslice(distributions, dims = 1))
-    percent_remaining = (n_particles ./ n_particles[begin]) .* 100
-
-    energy_distros = copy(distributions) .* 0
-    energy_in_each_distro = zeros(n_distros)
-
-    for i = 1:n_distros
-        for e = 1:size(distributions)[2]
-            energy_distros[i,e,:] = distributions[i,e,:] .* simulation_energy_bin_means[e]
-        end
-        energy_in_each_distro[i] = sum(energy_distros[i,:,:])
+    total_energy = zeros(n_distros)
+    total_particles = zeros(n_distros)
+    for i in 1:n_distros
+        distro_energy, distro_particles = _integrate_distribution(simulation_energy_bin_edges, simulation_pa_bin_edges, distributions[i,:,:])
+        total_particles[i] = distro_particles
+        total_energy[i] = distro_energy
     end
 
-    energy_deposited_cdf = cat(0, cumsum(-diff(energy_in_each_distro)), dims = 1)
+    percent_remaining = (total_particles[:] ./ total_particles[begin]) .* 100
+    energy_deposition_cdf = cat(0, cumsum(-diff(total_energy)), dims = 1)
 
-    plot(0:n_distros-1, energy_deposited_cdf,
+    plot(0:n_distros-1, energy_deposition_cdf,
         title = "Energy Deposition",
 
         marker = true,
@@ -695,13 +723,14 @@ function _multibounce_statistics_plot(distributions)
 
         xlabel = "Number of Bounces",
         xlims = (0, n_distros-.9),
+        xticks = 0:1:n_distros-1,
 
         ylabel = "Energy Deposited (keV)",
-        ylims = (0, energy_deposited_cdf[end]*1.1),
+        ylims = (0, energy_deposition_cdf[end]*1.1),
 
         tickdirection = :out,
         framestyle = :box,
-        aspect_ratio = (n_distros-.8)/(energy_deposited_cdf[end]*1.1)
+        aspect_ratio = (n_distros-.8)/(energy_deposition_cdf[end]*1.1)
     )
     energy = plot!()
 
@@ -717,6 +746,7 @@ function _multibounce_statistics_plot(distributions)
 
         xlabel = "Number of Bounces",
         xlims = (-.1, n_distros-.9),
+        xticks = 0:1:n_distros-1,
 
         ylabel = "% particles remaining",
         ylims = (.01, 130),
