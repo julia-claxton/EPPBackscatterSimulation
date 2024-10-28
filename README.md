@@ -3,8 +3,11 @@ A Julia port of the [G4EPP Python library](https://github.com/GrantBerland/G4EPP
 
 ## Importing
 
-To use this library, download the .zip and unpack it. This should give you a folder named `EPPBackscatterSimulation`. Move this folder to a location of your convenience. Add this line to any Julia script to access the functions:
+To use this library, download the .zip and unpack it. This should give you a folder named `EPPBackscatterSimulation`. Move this folder to a location of your convenience. 
 
+Before using the library, run `julia <path to EPPBackscatterSimulation>/install_dependencies.jl` to install this library's package dependencies.
+
+Then, add this line to any Julia script to access this library:
 ```
 include("<path to EPPBackscatterSimulation folder>/BackscatterSimulation.jl")
 ```

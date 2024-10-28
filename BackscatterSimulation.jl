@@ -15,6 +15,8 @@ include("./General_Functions.jl") # Provides general-purpose functions I find us
 
 # ---------------- Backscatter Simulation Functions ----------------
 function multibounce_simulation(input_distribution, n_bounces; show_progress = false)
+    # Returned distro is in <arb>*#/(MeV str)
+
     energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
     @assert size(input_distribution) == (energy_nbins, pa_nbins) "Multibounce simulation requires input to be on simulation grid (E = $energy_nbins bins, α = $pa_nbins bins). Use set_simulation_bins() to change these bins."
 
@@ -149,12 +151,14 @@ function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_b
     if return_beams == true
         return output_distribution, beam_coordinates, beam_strengths
     else
-        return output_distribution
+        return output_distribution # <arb>*#/(MeV str)
     end
 end
 
 function atmosphere_loss_rate(distributions)
     # Use least-squares regression to estimate loss rate of particles to atomsphere in a multibounce distribution
+    simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
+
     n_distros = size(distributions)[1]
     total_energy = zeros(n_distros)
     total_particles = zeros(n_distros)
@@ -221,10 +225,35 @@ function get_simulation_bins()
     return energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX
 end
 
+function energy_spectrum(e_bin_edges, pa_bin_edges, distribution)
+    # e_bin_edges [keV]
+    # pa_bin_edges [deg]
+    # distribution [<arb>/(MeV str)]
+
+    ΔE = [(e_bin_edges[e+1] - e_bin_edges[e])/1000 for e in 1:length(e_bin_edges)-1]
+    ΔΩ = [2π * (cosd(pa_bin_edges[α]) - cosd(pa_bin_edges[α+1])) for α in 1:length(pa_bin_edges)-1]
+    return dropdims(sum([distribution[e,α] * ΔE[e] * ΔΩ[α] for e in 1:length(e_bin_edges)-1, α in 1:length(pa_bin_edges)-1], dims = 2), dims = 2)
+end
+
+function pitch_angle_spectrum(e_bin_edges, pa_bin_edges, distribution)
+    # e_bin_edges [keV]
+    # pa_bin_edges [deg]
+    # distribution [<arb>/(MeV str)]
+
+    ΔE = [(e_bin_edges[e+1] - e_bin_edges[e])/1000 for e in 1:length(e_bin_edges)-1]
+    ΔΩ = [2π * (cosd(pa_bin_edges[α]) - cosd(pa_bin_edges[α+1])) for α in 1:length(pa_bin_edges)-1]
+    return dropdims(sum([distribution[e,α] * ΔE[e] * ΔΩ[α] for e in 1:length(e_bin_edges)-1, α in 1:length(pa_bin_edges)-1], dims = 1), dims = 1)
+end
+
+
+
 # ---------------- Backscatter Binning Functions ----------------
-function set_simulation_bins(; energy_nbins = 35, pa_nbins = 100, debug = false)
+function set_simulation_bins(; energy_nbins = 35, pa_nbins = 100, e_min = 10^1, e_max = 10^4, debug = false)
+    # TODO description.
+    # e_min, e_max in keV
+
     # Calculate bins
-    energy_bin_edges = 10 .^ LinRange(1, 4, energy_nbins + 1)
+    energy_bin_edges = 10 .^ LinRange(log10(e_min), log10(e_max), energy_nbins + 1)
     pa_bin_edges = LinRange(0, 180, pa_nbins + 1)
 
     # Save bins
@@ -251,6 +280,7 @@ function set_simulation_bins(; energy_nbins = 35, pa_nbins = 100, debug = false)
     # Start binning data
     println("Binning backscatter distributions...")
     println("\tEnergy Bins = $(energy_nbins)")
+    println("\tEnergy Range = ($e_min, $e_max) keV")
     println("\tPitch Angle Bins = $(pa_nbins)")
 
     for i = 1:length(backscatter_filenames)
@@ -294,7 +324,7 @@ function _prebake_backscatter_file(filename, backscatter_data_directory)
     pitch_angle = match.(r"PAD(.*?).csv", filename)[1]
     pitch_angle = parse(Int64, pitch_angle)
 
-    backscatter_distribution = _calculate_beam_backscatter(filename, backscatter_data_directory, energy_bin_edges, pa_bin_edges)
+    backscatter_distribution = _calculate_beam_backscatter(filename, backscatter_data_directory, energy_bin_edges, pa_bin_edges) # <arb>*#/(MeV str)
 
     npzwrite("$(BackscatterSimulation_TOP_LEVEL)/data/binned_backscatter_distributions/$(energy)keV_$(pitch_angle)deg.npz",
         energy_bin_edges = energy_bin_edges,
@@ -340,7 +370,7 @@ function _calculate_beam_backscatter(filename, backscatter_data_directory, energ
     flux_distribution = [n_particles_distribution[e,α] / (ΔE[e] * ΔΩ[α]) for e in 1:length(energy_bin_edges)-1, α in 1:length(pa_bin_edges)-1]
 
     # Return
-    return flux_distribution
+    return flux_distribution # <arb>*#/(MeV str)
 end
 
 # ---------------- Plotting Functions ----------------
@@ -405,9 +435,7 @@ function show_beams(locations, strengths; clims = (0, max(log10.(strengths)...))
 end
 
 function individual_bounce_plots(distributions; noisegate = -Inf)
-    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
-
-    error("This has a bunch of crap wrong with the units. Fix before using")
+    e_nbins, e_bin_edges, e_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
 
     n_plots = length(distributions[:,1,1])
     plots = []
@@ -416,7 +444,8 @@ function individual_bounce_plots(distributions; noisegate = -Inf)
     for i = 1:n_plots
         to_plot = distributions[i,:,:]
         to_plot[to_plot .<= noisegate] .= 0
-        heatmap(pa_bin_edges, log10.(energy_bin_edges), log10.(to_plot),
+        if sum(to_plot) ≠ 0; to_plot = log10.(to_plot); end # Plotting errors if we plot log10 of a zeros matrix
+        heatmap(pa_bin_edges, log10.(e_bin_edges), to_plot,
             title = "$(i-1) Bounces",
 
             xlabel = "Pitch Angle, deg",
@@ -426,7 +455,7 @@ function individual_bounce_plots(distributions; noisegate = -Inf)
             ylims = log10.((10, 10e3)),
             yticks = ([1, 2, 3, 4], ["10¹", "10²", "10³", "10⁴"]),
 
-            colorbar_title = "Log10 # Electrons",
+            colorbar_title = "Log10 Flux <arb>*#/(MeV str)",
             clims = clims,
             colormap = :haline,
 
@@ -439,9 +468,9 @@ function individual_bounce_plots(distributions; noisegate = -Inf)
         e_pa_heatmap = plot!()
 
         # Get individual histograms
-        energy_spectrum = dropdims(sum(distributions[i,:,:], dims = 2), dims = 2)
-        append!(energy_spectrum, energy_spectrum[end]) # So that step plotting looks right
-        plot(energy_bin_edges, energy_spectrum,
+        to_plot = energy_spectrum(e_bin_edges, pa_bin_edges, distributions[i,:,:])
+        append!(to_plot, to_plot[end]) # So that step plotting looks right
+        plot(e_bin_edges, to_plot,
             title = "Energy",
             permute = (:y, :x),
             linetype = :steppost,
@@ -450,29 +479,28 @@ function individual_bounce_plots(distributions; noisegate = -Inf)
             xlims = (10, 10e3),
             xscale = :log10,
 
-            ylims = (0, max(energy_spectrum...)),
+            ylims = (0, max(to_plot...)),
 
             rightmargin = -6mm,
-            aspect_ratio = max(energy_spectrum...)/(10e3-10)
+            aspect_ratio = max(to_plot...)/(10e3-10)
         )
         energy = plot!()
 
-        pitch_angle_spectrum = dropdims(sum(distributions[i,:,:], dims = 1), dims = 1)
-        append!(pitch_angle_spectrum, pitch_angle_spectrum[end]) # So that step plotting looks right
-        if iseven(i); reverse!(pitch_angle_spectrum); end # Northern hemisphere normalization
-        plot(pa_bin_edges, pitch_angle_spectrum,
+        to_plot = pitch_angle_spectrum(e_bin_edges, pa_bin_edges, distributions[i,:,:])
+        append!(to_plot, to_plot[end]) # So that step plotting looks right
+        if iseven(i); reverse!(to_plot); end # Northern hemisphere normalization
+        plot(pa_bin_edges, to_plot,
             title = "NH Pitch Angle",
             linetype = :steppost,
             label = false,
 
             xlims = (0, 180),
 
-            ylims = (0, max(pitch_angle_spectrum...)),
+            ylims = (0, max(to_plot...)),
 
-            aspect_ratio = 180/max(pitch_angle_spectrum...)
+            aspect_ratio = 180/max(to_plot...)
         )
         pa = plot!()
-
 
         layout = @layout [a{.4w} b c]
         plot(e_pa_heatmap, energy, pa,
@@ -480,11 +508,8 @@ function individual_bounce_plots(distributions; noisegate = -Inf)
             size = (2,.75) .* 400,
             dpi = 300
         )
-
         push!(plots, plot!())
     end
-
-
 
     plot(plots...,
         layout = (n_plots, 1),
@@ -500,19 +525,14 @@ function compare_input_to_output(distributions; show_plot = true)
 
     n_bounces = size(distributions)[1] - 1
 
-    ΔE = [(simulation_energy_bin_edges[e+1] - simulation_energy_bin_edges[e])/1000 for e in 1:simulation_energy_nbins]
-    ΔΩ = [2π * (cosd(simulation_pa_bin_edges[α]) - cosd(simulation_pa_bin_edges[α+1])) for α in 1:simulation_pa_nbins]
-    e_spectrum(distribution) = dropdims(sum([distribution[e,α] * ΔE[e] * ΔΩ[α] for e in 1:simulation_energy_nbins, α in 1:simulation_pa_nbins], dims = 2), dims = 2)
-    pa_spectrum(distribution) = dropdims(sum([distribution[e,α] * ΔE[e] * ΔΩ[α] for e in 1:simulation_energy_nbins, α in 1:simulation_pa_nbins], dims = 1), dims = 1)
-
     input = distributions[1,:,:]
-    input_energy_spectrum = e_spectrum(input)
-    input_pa_spectrum = pa_spectrum(input)
+    input_energy_spectrum = energy_spectrum(simulation_energy_bin_edges, simulation_pa_bin_edges, input)
+    input_pa_spectrum = pitch_angle_spectrum(simulation_energy_bin_edges, simulation_pa_bin_edges, input)
     input_energy_flux = [input[e,α] * simulation_energy_bin_means[e] for e in 1:simulation_energy_nbins, α in 1:simulation_pa_nbins]
 
     output = dropdims(sum(distributions, dims = 1), dims = 1)
-    output_energy_spectrum = e_spectrum(output)
-    output_pa_spectrum = pa_spectrum(output)
+    output_energy_spectrum = energy_spectrum(simulation_energy_bin_edges, simulation_pa_bin_edges, output)
+    output_pa_spectrum = pitch_angle_spectrum(simulation_energy_bin_edges, simulation_pa_bin_edges, output)
     output_energy_flux = [output[e,α] * simulation_energy_bin_means[e] for e in 1:simulation_energy_nbins, α in 1:simulation_pa_nbins]
 
     # Input heatmap
