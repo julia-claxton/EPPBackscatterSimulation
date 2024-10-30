@@ -112,7 +112,7 @@ function simulate_NH_backscatter(e_bin_edges, pa_bin_edges, input_flux; return_b
         beam_backscatter = beam_backscatter["backscatter_distribution"]
 
         # Zero out regions where we don't have precalculated beams
-        if ((0 <= pa <= SIMULATION_α_MAX) == false) || ((5 <= e <= 15e3) == false)
+        if ((0 <= pa <= SIMULATION_α_MAX) == false) || ((5 <= e <= 2e4) == false)
             beam_backscatter .*= 0
         end
 
@@ -157,24 +157,79 @@ end
 
 function atmosphere_loss_rate(distributions)
     # Use least-squares regression to estimate loss rate of particles to atomsphere in a multibounce distribution
+    # LOSS RATE BY PARTICLES, NOT ENERGY
     simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
 
     n_distros = size(distributions)[1]
-    total_energy = zeros(n_distros)
+    if n_distros ≤ 1; return NaN; end
+
     total_particles = zeros(n_distros)
     for i in 1:n_distros
-        distro_energy, distro_particles = _integrate_distribution(simulation_energy_bin_edges, simulation_pa_bin_edges, distributions[i,:,:])
+        _, distro_particles = _integrate_distribution(simulation_energy_bin_edges, simulation_pa_bin_edges, distributions[i,:,:])
         total_particles[i] = distro_particles
-        total_energy[i] = distro_energy
     end
-
-    if length(total_particles) == 1; return NaN; end
+    idxs_to_delete = findall(total_particles .== 0)[2:end]
+    if idxs_to_delete ≠ []; deleteat!(total_particles, idxs_to_delete); end # Get rid of zeros that would mess with the linear fit
 
     A = hcat(1:length(total_particles), ones(length(total_particles))) # A matrix for least squares problem y = Ac
     remaining_factor_logspace, _ = A \ log10.(total_particles)
 
     loss_rate = 1 - (10^remaining_factor_logspace)
+    if isnan(loss_rate)
+        loss_rate = 1
+    end
     return loss_rate
+end
+
+function get_multibounce_fraction(distributions, α_lc)
+    # distributions in flux units
+    simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
+
+    # Get steady state and multibounce distributions
+    steady_state_distribution = dropdims(sum(distributions, dims = 1), dims = 1)
+    multibounce_effects_distribution = dropdims(sum(distributions[3:end,:,:], dims = 1), dims = 1)
+
+    # Get loss cone distributions
+    lc_mask = simulation_pa_bin_edges[begin:end-1] .≤ α_lc
+    lc_steady_state = copy(steady_state_distribution)
+    lc_steady_state[:, .!lc_mask] .= 0
+    lc_multibounce = copy(multibounce_effects_distribution)
+    lc_multibounce[:, .!lc_mask] .= 0
+
+    # Calculate multibounce fractions
+    lc_steady_state_e, lc_steady_state_n = _integrate_distribution(simulation_energy_bin_edges, simulation_pa_bin_edges, lc_steady_state)
+    lc_multibounce_e, lc_multibounce_n = _integrate_distribution(simulation_energy_bin_edges, simulation_pa_bin_edges, lc_multibounce)
+    
+    lc_multibounce_fraction_e = lc_multibounce_e / lc_steady_state_e
+    lc_multibounce_fraction_n = lc_multibounce_n / lc_steady_state_n
+
+    # Now do the same for the anti loss cone
+    # Get anti loss cone distributions
+    alc_mask = simulation_pa_bin_edges[begin:end-1] .≥ (180 - α_lc)
+    alc_steady_state = copy(steady_state_distribution)
+    alc_steady_state[:, .!alc_mask] .= 0
+    alc_multibounce = copy(multibounce_effects_distribution)
+    alc_multibounce[:, .!alc_mask] .= 0
+
+    # Calculate multibounce fractions
+    alc_steady_state_e, alc_steady_state_n = _integrate_distribution(simulation_energy_bin_edges, simulation_pa_bin_edges, alc_steady_state)
+    alc_multibounce_e, alc_multibounce_n = _integrate_distribution(simulation_energy_bin_edges, simulation_pa_bin_edges, alc_multibounce)
+    
+    alc_multibounce_fraction_e = alc_multibounce_e / alc_steady_state_e
+    alc_multibounce_fraction_n = alc_multibounce_n / alc_steady_state_n
+
+    # Check for 0/0s and guard against them
+    if any(isnan.([lc_multibounce_fraction_e, lc_multibounce_fraction_n]))
+        lc_multibounce_fraction_e = 0
+        lc_multibounce_fraction_n = 0
+    end
+    if any(isnan.([alc_multibounce_fraction_e, alc_multibounce_fraction_n]))
+        alc_multibounce_fraction_e = 0
+        alc_multibounce_fraction_n = 0
+    end
+
+
+    return lc_multibounce_fraction_e, lc_multibounce_fraction_n, alc_multibounce_fraction_e, alc_multibounce_fraction_n
 end
 
 function _get_beam_locations()
@@ -194,6 +249,29 @@ function _get_beam_locations()
 
     # Return
     return collect(zip(backscatter_energies, backscatter_pitch_angles))
+end
+
+function _beam_debug_plot()
+    simulation_energy_nbins, simulation_energy_bin_edges, simulation_energy_bin_means, simulation_pa_nbins, simulation_pa_bin_edges, simulation_pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
+    beams = _get_beam_locations()
+    beams = [(beams[i][2], beams[i][1]) for i in eachindex(beams)]
+
+    plot(
+        title = "Input Beams",
+
+        xlabel = "Pitch Angle, deg",
+        xlims = (0, 180),
+
+        ylabel = "Energy, keV",
+        ylims = (10, 1e4),
+        yscale = :log10,
+
+        grid = false
+    )
+    hline!(simulation_energy_bin_edges, linecolor = RGB(.8,.8,.8), label = false)
+    vline!(simulation_pa_bin_edges, linecolor = RGB(.8,.8,.8), label = false)
+    scatter!(beams, label = false, color = :black)
+    display(plot!())
 end
 
 function _integrate_distribution(e_edges, pa_edges, distribution)
@@ -245,10 +323,8 @@ function pitch_angle_spectrum(e_bin_edges, pa_bin_edges, distribution)
     return dropdims(sum([distribution[e,α] * ΔE[e] * ΔΩ[α] for e in 1:length(e_bin_edges)-1, α in 1:length(pa_bin_edges)-1], dims = 1), dims = 1)
 end
 
-
-
 # ---------------- Backscatter Binning Functions ----------------
-function set_simulation_bins(; energy_nbins = 35, pa_nbins = 100, e_min = 10^1, e_max = 10^4, debug = false)
+function set_simulation_bins(; energy_nbins = 35, pa_nbins = 100, e_min = 10^1, e_max = 10^4)
     # TODO description.
     # e_min, e_max in keV
 
@@ -288,30 +364,6 @@ function set_simulation_bins(; energy_nbins = 35, pa_nbins = 100, e_min = 10^1, 
         _prebake_backscatter_file(backscatter_filenames[i], backscatter_data_directory)
     end
     println("\n")
-
-    # Show debug info if needed
-    if debug == true
-        # Show all input beams
-        energies = [parse(Int64, match.(r"bs_spectra(.*?)keV", backscatter_filenames[i])[1]) for i = eachindex(backscatter_filenames)]
-        pitch_angles = [parse(Int64, match.(r"PAD(.*?).csv", backscatter_filenames[i])[1]) for i = eachindex(backscatter_filenames)]
-
-        plot(
-            title = "Input Beams",
-
-            xlabel = "Pitch Angle, deg",
-            xlims = (0, 180),
-
-            ylabel = "Energy, keV",
-            ylims = (10, 1e4),
-            yscale = :log10,
-
-            grid = false
-        )
-        hline!(energy_bin_edges, linecolor = RGB(.8,.8,.8), label = false)
-        vline!(pa_bin_edges, linecolor = RGB(.8,.8,.8), label = false)
-        scatter!(pitch_angles, energies, label = false, color = :black)
-        display(plot!())
-    end
 end
 
 function _prebake_backscatter_file(filename, backscatter_data_directory)
@@ -678,41 +730,6 @@ function compare_input_to_output(distributions; show_plot = true)
     )
     if show_plot == true; display(plot!()); end
     return plot!()
-end
-
-function plot_percent_change(distributions)
-    energy_nbins, energy_bin_edges, energy_bin_means, pa_nbins, pa_bin_edges, pa_bin_means, SIMULATION_α_MAX = get_simulation_bins()
-    loss_cone_slice = pa_bin_edges[begin:end-1] .< 67 # Approx. loss cone angle for simulation
-
-    input = distributions[1,:,:]
-    output = dropdims(sum(distributions, dims = 1), dims = 1)
-
-    fraction_change = (output .- input) ./ input
-    percent_change = fraction_change .* 100
-
-    if any(percent_change .< 0); error("something is deeply wrong. pray for forgiveness."); end
-
-    heatmap(pa_bin_edges, log10.(energy_bin_edges), percent_change,
-        xlabel = "Pitch Angle, deg",
-        xlims = (0, SIMULATION_α_MAX),
-
-        ylabel = "Energy, eV",
-        ylims = (2, 4),
-        yticks = ([2, 3, 4], ["10²", "10³", "10⁴"]),
-
-        aspect_ratio = (180/2),
-
-        colorbar_title = "Flux Increase (%)",
-        colormap = cgrad(:cherry, rev = true),
-        clims = (0, 100),
-
-        grid = false,
-        framestyle = :box,
-        background_color_outside = :transparent,
-        background_color_inside = :white,
-        dpi = 300
-    )
-    display(plot!())
 end
 
 function _multibounce_statistics_plot(distributions)
